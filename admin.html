@@ -167,6 +167,10 @@
       background: rgba(255, 255, 255, 0.86);
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
     }
+    .folder-sidebar.is-drag-active {
+      border-color: rgba(67, 195, 124, 0.48);
+      box-shadow: 0 12px 30px rgba(67, 195, 124, 0.16);
+    }
     .folder-head {
       display: flex;
       align-items: center;
@@ -216,6 +220,25 @@
       font-size: 12px;
       color: #666;
       border-bottom: 1px dashed rgba(0, 0, 0, 0.08);
+      word-break: break-all;
+    }
+    .folder-drop-hint {
+      margin: 8px 8px 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px dashed rgba(67, 195, 124, 0.72);
+      background: rgba(67, 195, 124, 0.12);
+      color: #1f7a49;
+      display: grid;
+      gap: 4px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .folder-drop-hint strong {
+      font-size: 13px;
+      color: #145d36;
+    }
+    .folder-drop-hint span {
       word-break: break-all;
     }
     .folder-tree {
@@ -343,6 +366,8 @@
     }
     body.is-dragging-files .folder-node {
       transition-duration: 0.12s;
+      border-color: rgba(67, 195, 124, 0.24);
+      background: rgba(67, 195, 124, 0.06);
     }
     body.is-dragging-files .folder-node.is-drop-target {
       box-shadow: inset 0 0 0 1px rgba(67, 195, 124, 0.55), 0 4px 12px rgba(67, 195, 124, 0.18);
@@ -381,6 +406,14 @@
     html[data-theme="dark"] .folder-current {
       color: #c9dbff;
       border-color: rgba(120, 145, 192, 0.24);
+    }
+    html[data-theme="dark"] .folder-drop-hint {
+      background: rgba(67, 195, 124, 0.14);
+      border-color: rgba(87, 221, 147, 0.56);
+      color: #a7f0c6;
+    }
+    html[data-theme="dark"] .folder-drop-hint strong {
+      color: #d9ffe7;
     }
     html[data-theme="dark"] .folder-node {
       color: #dce7ff;
@@ -1005,7 +1038,11 @@
       </el-header>
       <el-main class="main-container">
         <div class="disk-layout">
-          <aside class="folder-sidebar">
+          <aside
+            class="folder-sidebar"
+            :class="{ 'is-drag-active': dragState.active }"
+            @dragover.prevent="handleFolderSidebarDragOver"
+          >
             <div class="folder-head">
               <span class="folder-head-title"><i class="fas fa-folder-tree"></i><span>目录管理</span></span>
               <span class="folder-head-actions">
@@ -1016,6 +1053,10 @@
               </span>
             </div>
             <div class="folder-current">当前位置：/{{ folderPath || '' }}</div>
+            <div class="folder-drop-hint" v-if="dragState.active">
+              <strong>{{ dragState.fileIds.length || selectedFiles.length || 1 }} 个文件待移动</strong>
+              <span>拖到下方任意目录后松开，即可移动到：{{ dragTargetLabel }}</span>
+            </div>
             <div class="folder-tree">
               <button
                 v-for="folder in folderTreeNodes"
@@ -1776,7 +1817,7 @@
       folderTreeNodes() {
         const list = [{
           path: '',
-          name: '全部文件',
+          name: '根目录',
           depth: 0,
           fileCount: this.folderPath ? '-' : this.Number,
         }];
@@ -1794,6 +1835,11 @@
           return a.path.localeCompare(b.path, 'zh-CN');
         });
         return list.concat(nodes);
+      },
+      dragTargetLabel() {
+        if (!this.dragState.active) return '未选择目录';
+        const target = this.normalizeFolderPath(this.dragState.targetPath || '');
+        return target || '根目录';
       },
       batchToolbarStyle() {
         if (this.isMobileViewport) {
@@ -2624,11 +2670,18 @@
         document.body.classList.remove('is-dragging-files');
         document.querySelectorAll('.dragging-file-card').forEach((node) => node.classList.remove('dragging-file-card'));
       },
+      handleFolderSidebarDragOver(event) {
+        if (!this.dragState.active) return;
+        if (event?.dataTransfer) {
+          event.dataTransfer.dropEffect = 'move';
+        }
+      },
       handleFolderDragOver(path, event) {
         if (!this.dragState.active) return;
         if (event && event.dataTransfer) {
           event.dataTransfer.dropEffect = 'move';
         }
+        this.handleFolderDragEnter(path);
       },
       handleFolderDragEnter(path) {
         if (!this.dragState.active) return;
@@ -2668,16 +2721,26 @@
       extractDragIds(event) {
         if (this.dragState.fileIds.length > 0) return this.dragState.fileIds;
         const raw = event?.dataTransfer?.getData('application/x-kvault-files') || '';
-        if (!raw) return [];
+        if (!raw) {
+          const plain = event?.dataTransfer?.getData('text/plain') || '';
+          return plain
+            .split(',')
+            .map((item) => String(item || '').trim())
+            .filter(Boolean);
+        }
         try {
           const parsed = JSON.parse(raw);
           return Array.isArray(parsed) ? parsed.map((item) => String(item || '')).filter(Boolean) : [];
         } catch {
-          return [];
+          return raw
+            .split(',')
+            .map((item) => String(item || '').trim())
+            .filter(Boolean);
         }
       },
       async handleFolderDrop(path, event) {
         const targetFolderPath = this.normalizeFolderPath(path);
+        this.dragState.targetPath = targetFolderPath;
         const ids = this.extractDragIds(event);
         if (!ids.length) {
           this.handleFileDragEnd();
@@ -2690,6 +2753,7 @@
           return current !== targetFolderPath;
         });
         if (!hasEffectiveMove) {
+          this.$message.info(`文件已在 ${targetFolderPath || '根目录'}`);
           this.handleFileDragEnd();
           return;
         }
@@ -2745,6 +2809,7 @@
         }
         this.sortFoldersLocal();
         this.updateStats();
+        this.$message.info(`正在移动 ${ids.length} 个文件到 ${targetFolderPath || '根目录'}...`, { duration: 1200 });
 
         try {
           const result = await fetch('./api/manage/files/move-folder', {
